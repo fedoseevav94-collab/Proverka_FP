@@ -3,10 +3,14 @@ from datetime import datetime, timezone
 from damage_bot.core.classifier import classify_close_comment, classify_fp_text
 from damage_bot.core.constants import CaseStatus, MessageCategory
 from damage_bot.core.matching import CarRef, MatchStatus, match_car
-from damage_bot.core.parsers import parse_fp_message, parse_pv_return
+from damage_bot.core.parsers import is_fp_inspection, parse_fp_message, parse_pv_return
 from damage_bot.core.plates import digits_key, equivalent_chat_ids, normalize_plate
 from damage_bot.core.workflow import ReminderSchedule, escalation_due_at, reminder_due_at
+from damage_bot.core.fp_schedule import fp_first_due_at
+from damage_bot.core.managers import infer_manager_username, parse_manager_days_off
 
+
+MANAGER_DIRECTORY_FIXTURE = "pagorodu:Агаджанян Арман Андраникович;Wuggfi:Уметалыев Руслан Уметалыевич;lalalas19:Губейдулин Рафаэль Дамирович;serb_98:Петрович Александр Слободанович"
 
 def test_plate_normalization() -> None:
     assert normalize_plate("о917нх797") == "O917HX797"
@@ -111,3 +115,49 @@ def test_closing_comment_classification() -> None:
     assert classify_close_comment("списали 15000 с баланса") == CaseStatus.CLOSED_BALANCE_CHARGED
     assert classify_close_comment("поставили рассрочку 30000") == CaseStatus.CLOSED_INSTALLMENT
     assert classify_close_comment("ок") is None
+
+
+def test_manager_days_off_parsing() -> None:
+    days = parse_manager_days_off("pagorodu:thu,fri;Wuggfi:wed,thu;lalalas19:сб,вс")
+    assert days["pagorodu"] == {3, 4}
+    assert days["wuggfi"] == {2, 3}
+    assert days["lalalas19"] == {5, 6}
+
+
+def test_fp_first_due_same_business_day() -> None:
+    created_at = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+    due = fp_first_due_at(
+        created_at,
+        45,
+        "pagorodu:thu,fri;Wuggfi:wed,thu;lalalas19:sat,sun;serb_98:sat,sun",
+    )
+    assert due == datetime(2026, 6, 1, 12, 45, tzinfo=timezone.utc)
+
+
+def test_fp_first_due_after_end_of_day_moves_to_next_morning() -> None:
+    created_at = datetime(2026, 6, 1, 15, 50, tzinfo=timezone.utc)  # 18:50 Moscow
+    due = fp_first_due_at(
+        created_at,
+        45,
+        "pagorodu:thu,fri;Wuggfi:wed,thu;lalalas19:sat,sun;serb_98:sat,sun",
+    )
+    assert due == datetime(2026, 6, 2, 6, 45, tzinfo=timezone.utc)  # 09:45 Moscow
+
+
+def test_fp_first_due_skips_day_when_every_manager_is_off() -> None:
+    created_at = datetime(2026, 6, 5, 15, 40, tzinfo=timezone.utc)  # Friday evening Moscow
+    due = fp_first_due_at(created_at, 45, "one:sat;two:sat")
+    assert due == datetime(2026, 6, 7, 6, 45, tzinfo=timezone.utc)  # Sunday 09:45 Moscow
+
+
+def test_fp_inspection_marker_only_for_osmotr() -> None:
+    assert is_fp_inspection("О917НХ797 осмотр\nПоврежден бампер")
+    assert not is_fp_inspection("О917НХ797 сдал\nПоврежден бампер")
+
+
+def test_infer_manager_username_by_full_or_short_employee_name() -> None:
+    assert infer_manager_username("Агаджанян Арман", MANAGER_DIRECTORY_FIXTURE) == "pagorodu"
+    assert infer_manager_username("Уметалыев Руслан", MANAGER_DIRECTORY_FIXTURE) == "wuggfi"
+    assert infer_manager_username("Губейдулин Рафаэль", MANAGER_DIRECTORY_FIXTURE) == "lalalas19"
+    assert infer_manager_username("Петрович Александр", MANAGER_DIRECTORY_FIXTURE) == "serb_98"
+    assert infer_manager_username("Иванов Евгений Александрович", MANAGER_DIRECTORY_FIXTURE) is None

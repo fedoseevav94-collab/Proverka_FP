@@ -11,9 +11,10 @@ from sqlalchemy import select
 
 from damage_bot.config import Settings
 from damage_bot.core.constants import ActionType, CaseStatus
+from damage_bot.core.managers import parse_manager_days_off
 from damage_bot.db import DamageCase
 from damage_bot.keyboards import reminder_keyboard
-from damage_bot.messages import escalation_text, reminder_text
+from damage_bot.messages import escalation_text, reminder_text, service_amount_request_text
 from damage_bot.repository import create_case_action, due_reminder_cases, utcnow
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,9 @@ async def process_due_cases(bot: Bot, session_factory: async_sessionmaker, setti
             )
             if not case:
                 continue
+            if case.status == CaseStatus.WAITING_SERVICE_AMOUNT.value:
+                await _send_service_amount_reminder(bot, session, case, settings)
+                continue
             if case.reminders_sent >= settings.max_reminders:
                 await _escalate(bot, settings, session, case)
                 continue
@@ -51,10 +55,27 @@ async def process_due_cases(bot: Bot, session_factory: async_sessionmaker, setti
         await session.commit()
 
 
-async def _send_reminder(bot: Bot, session, case: DamageCase, settings: Settings) -> None:
+async def _send_service_amount_reminder(bot: Bot, session, case: DamageCase, settings: Settings) -> None:
     await bot.send_message(
         case.fp_message.chat_id,
-        reminder_text(case),
+        service_amount_request_text(case, settings.service_username),
+        reply_to_message_id=case.fp_message.telegram_message_id,
+        allow_sending_without_reply=False,
+    )
+    case.last_reminder_at = utcnow()
+    case.first_check_due_at = case.last_reminder_at + timedelta(
+        minutes=settings.service_amount_reminder_interval_minutes
+    )
+    await create_case_action(session, case.id, ActionType.SERVICE_AMOUNT_REQUESTED)
+
+
+async def _send_reminder(bot: Bot, session, case: DamageCase, settings: Settings) -> None:
+    mention_override = None
+    if not case.manager_name and not case.manager_username:
+        mention_override = _manager_mentions_for_today(settings)
+    await bot.send_message(
+        case.fp_message.chat_id,
+        reminder_text(case, mention_override),
         reply_markup=reminder_keyboard(case.id, case.category),
         reply_to_message_id=case.fp_message.telegram_message_id,
         allow_sending_without_reply=False,
@@ -81,3 +102,16 @@ async def _escalate(bot: Bot, settings: Settings, session, case: DamageCase) -> 
     case.status = CaseStatus.ESCALATED_TO_SUPERVISOR.value
     case.escalated_at = utcnow()
     await create_case_action(session, case.id, ActionType.ESCALATED)
+
+
+def _manager_mentions_for_today(settings: Settings) -> str | None:
+    days_off = parse_manager_days_off(settings.manager_days_off)
+    if not days_off:
+        return None
+    weekday = utcnow().weekday()
+    mentions = [
+        f"@{username}"
+        for username, off_days in days_off.items()
+        if weekday not in off_days
+    ]
+    return " ".join(mentions) if mentions else "Менеджеры"

@@ -24,7 +24,7 @@ async def main() -> None:
 
     reminder_task = asyncio.create_task(reminder_loop(bot, session_factory, settings))
     try:
-        await dp.start_polling(bot)
+        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         reminder_task.cancel()
         await bot.session.close()

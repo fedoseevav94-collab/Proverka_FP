@@ -1,23 +1,28 @@
 from __future__ import annotations
 
 import logging
-from datetime import timezone
+from datetime import timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, ForceReply, Message
+from aiogram.types import CallbackQuery, ForceReply, Message, MessageReactionUpdated
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from damage_bot.config import Settings
 from damage_bot.core.classifier import classify_close_comment
-from damage_bot.core.constants import ActionType, CaseStatus, MessageCategory
+from damage_bot.core.constants import ActionType, CaseStatus, FINAL_STATUSES, MessageCategory
+from damage_bot.core.fp_schedule import fp_first_due_at
+from damage_bot.core.managers import active_manager_mentions, infer_manager_username, parse_manager_days_off
 from damage_bot.core.matching import MatchStatus, match_car
-from damage_bot.core.parsers import parse_fp_message, parse_pv_return
-from damage_bot.core.plates import equivalent_chat_ids
-from damage_bot.db import DamageCase, FPMessage, PVReturn
+from damage_bot.core.parsers import is_fp_inspection, parse_fp_message, parse_pv_return
+from damage_bot.core.plates import equivalent_chat_ids, find_plate
+from damage_bot.db import CaseAction, DamageCase, FPMessage, PVReturn
 from damage_bot.fleet import reload_cars_from_excel
 from damage_bot.keyboards import reminder_keyboard
-from damage_bot.messages import close_comment_prompt, diagnostic_text
+from damage_bot.messages import close_comment_prompt, diagnostic_text, pv_action_request_text, service_amount_request_text
 from damage_bot.repository import (
     attach_return_to_cases,
     car_refs,
@@ -58,7 +63,7 @@ def register_handlers(dp: Dispatcher, session_factory: async_sessionmaker, setti
         await handle_cancel_case(message, session_factory, settings)
 
     async def callback_wrapper(callback: CallbackQuery, bot: Bot) -> None:
-        await handle_callback(callback, bot, session_factory)
+        await handle_callback(callback, bot, session_factory, settings)
 
     async def message_wrapper(message: Message, bot: Bot) -> None:
         await handle_message(message, bot, session_factory, settings)
@@ -70,7 +75,11 @@ def register_handlers(dp: Dispatcher, session_factory: async_sessionmaker, setti
     dp.message.register(open_cases_wrapper, Command("open_cases"))
     dp.message.register(close_case_wrapper, Command("close_case"))
     dp.message.register(cancel_case_wrapper, Command("cancel_case"))
-    dp.callback_query.register(callback_wrapper, F.data.regexp(r"^(seen|request_close|close_no_charge):\d+$"))
+    async def reaction_wrapper(event: MessageReactionUpdated) -> None:
+        await handle_message_reaction(event, session_factory, settings)
+
+    dp.callback_query.register(callback_wrapper, F.data.regexp(r"^(seen|request_close|request_paid|wait_service_amount|close_no_charge):\d+$"))
+    dp.message_reaction.register(reaction_wrapper)
     dp.message.register(message_wrapper)
 
 
@@ -182,23 +191,214 @@ async def handle_message(
     if not text:
         return
     if equivalent_chat_ids(settings.fp_chat_id, message.chat.id) and _is_ignored_fp_user(message, settings):
+        if await _try_record_service_amount_response(message, session_factory, settings, text):
+            return
         logger.info("Ignored FP message from service user %s", message.from_user.username if message.from_user else None)
         return
     if message.from_user:
         await _try_close_waiting_comment(message, session_factory, text)
 
     if equivalent_chat_ids(settings.fp_chat_id, message.chat.id):
+        if await _try_close_case_from_manager_text(message, session_factory, settings, text):
+            return
+        if await _try_record_manager_reply_to_fp(message, session_factory, settings):
+            return
         await _handle_fp_message(message, bot, session_factory, settings, text)
     elif equivalent_chat_ids(settings.pv_chat_id, message.chat.id):
         await _handle_pv_message(message, bot, session_factory, settings, text)
 
 
-async def handle_callback(callback: CallbackQuery, bot: Bot, session_factory: async_sessionmaker) -> None:
+async def _try_record_service_amount_response(
+    message: Message,
+    session_factory: async_sessionmaker,
+    settings: Settings,
+    text: str,
+) -> bool:
+    if not message.from_user:
+        return False
+    username = (message.from_user.username or "").lstrip("@").lower()
+    if username != settings.service_username.lstrip("@").lower():
+        return False
+    async with session_factory() as session:
+        query = (
+            select(DamageCase)
+            .where(DamageCase.status == CaseStatus.WAITING_SERVICE_AMOUNT.value)
+            .options(selectinload(DamageCase.fp_message), selectinload(DamageCase.car))
+        )
+        lookup_text = text
+        if message.reply_to_message:
+            direct_query = query.join(FPMessage, FPMessage.id == DamageCase.fp_message_id).where(
+                FPMessage.chat_id == message.chat.id,
+                FPMessage.telegram_message_id == message.reply_to_message.message_id,
+            )
+            case = await session.scalar(direct_query.order_by(DamageCase.created_at.desc()))
+            if case:
+                await _mark_service_amount_received(session, case, message, text)
+                await session.commit()
+                return True
+            lookup_text = "\n".join(
+                part for part in [message.reply_to_message.text, message.reply_to_message.caption, text] if part
+            )
+        plate = find_plate(lookup_text)
+        if not plate:
+            return False
+        car_match = match_car(plate, await car_refs(session))
+        if car_match.status != MatchStatus.MATCHED or not car_match.car:
+            return False
+        case = await session.scalar(
+            query.where(DamageCase.car_id == car_match.car.id).order_by(DamageCase.created_at.desc())
+        )
+        if not case:
+            return False
+        await _mark_service_amount_received(session, case, message, text)
+        await session.commit()
+    return True
+
+
+async def _mark_service_amount_received(session, case: DamageCase, message: Message, text: str) -> None:
+    case.status = CaseStatus.WAITING_MANAGER_ACTION.value
+    case.first_check_due_at = utcnow()
+    await create_case_action(
+        session,
+        case.id,
+        ActionType.SERVICE_AMOUNT_RECEIVED,
+        message.from_user.id if message.from_user else None,
+        message.from_user.username if message.from_user else None,
+        message.from_user.full_name if message.from_user else None,
+        text,
+    )
+
+
+async def _try_close_case_from_manager_text(
+    message: Message,
+    session_factory: async_sessionmaker,
+    settings: Settings,
+    text: str,
+) -> bool:
+    if not message.from_user:
+        return False
+    username = (message.from_user.username or "").lstrip("@").lower()
+    if username not in parse_manager_days_off(settings.manager_days_off):
+        return False
+    close_status = classify_close_comment(text)
+    if not close_status:
+        return False
+    plate = find_plate(text)
+    if not plate:
+        return False
+    async with session_factory() as session:
+        car_match = match_car(plate, await car_refs(session))
+        if car_match.status != MatchStatus.MATCHED or not car_match.car:
+            return False
+        case = await session.scalar(
+            select(DamageCase)
+            .where(
+                DamageCase.car_id == car_match.car.id,
+                DamageCase.status.not_in([status.value for status in FINAL_STATUSES]),
+            )
+            .order_by(DamageCase.created_at.desc())
+        )
+        if not case:
+            return False
+        _close_case(case, close_status, message.from_user.id, text)
+        await create_case_action(
+            session,
+            case.id,
+            ActionType.CLOSED_WITH_COMMENT,
+            message.from_user.id,
+            message.from_user.username,
+            message.from_user.full_name,
+            text,
+        )
+        await session.commit()
+    await message.reply(f"Кейс #{case.id} закрыт: {close_status.value}")
+    return True
+
+
+async def _try_record_manager_reply_to_fp(
+    message: Message,
+    session_factory: async_sessionmaker,
+    settings: Settings,
+) -> bool:
+    if not message.reply_to_message or not message.from_user:
+        return False
+    username = (message.from_user.username or "").lstrip("@").lower()
+    if username not in parse_manager_days_off(settings.manager_days_off):
+        return False
+    async with session_factory() as session:
+        case = await session.scalar(
+            select(DamageCase)
+            .join(FPMessage, FPMessage.id == DamageCase.fp_message_id)
+            .where(
+                FPMessage.chat_id == message.chat.id,
+                FPMessage.telegram_message_id == message.reply_to_message.message_id,
+            )
+        )
+        if not case:
+            return False
+        case.status = CaseStatus.MANAGER_SEEN.value
+        await create_case_action(
+            session,
+            case.id,
+            ActionType.MANAGER_SEEN,
+            message.from_user.id,
+            message.from_user.username,
+            message.from_user.full_name,
+            message.text or message.caption,
+        )
+        await session.commit()
+    return True
+
+
+async def handle_message_reaction(
+    event: MessageReactionUpdated,
+    session_factory: async_sessionmaker,
+    settings: Settings,
+) -> None:
+    if not equivalent_chat_ids(settings.fp_chat_id, event.chat.id):
+        return
+    user = event.user
+    if not user:
+        return
+    username = (user.username or "").lstrip("@").lower()
+    if username not in parse_manager_days_off(settings.manager_days_off):
+        return
+    if not event.new_reaction:
+        return
+    async with session_factory() as session:
+        case = await session.scalar(
+            select(DamageCase)
+            .join(FPMessage, FPMessage.id == DamageCase.fp_message_id)
+            .where(
+                FPMessage.chat_id == event.chat.id,
+                FPMessage.telegram_message_id == event.message_id,
+            )
+        )
+        if not case:
+            return
+        case.status = CaseStatus.MANAGER_SEEN.value
+        await create_case_action(
+            session,
+            case.id,
+            ActionType.MANAGER_SEEN,
+            user.id,
+            user.username,
+            user.full_name,
+            "reaction",
+        )
+        await session.commit()
+
+
+async def handle_callback(callback: CallbackQuery, bot: Bot, session_factory: async_sessionmaker, settings: Settings) -> None:
     if not callback.data or not callback.from_user:
         return
     action, raw_case_id = callback.data.split(":", 1)
     async with session_factory() as session:
-        case = await session.get(DamageCase, int(raw_case_id))
+        case = await session.scalar(
+            select(DamageCase)
+            .where(DamageCase.id == int(raw_case_id))
+            .options(selectinload(DamageCase.fp_message), selectinload(DamageCase.car))
+        )
         if not case:
             await callback.answer("Кейс не найден.", show_alert=True)
             return
@@ -214,7 +414,7 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, session_factory: as
             )
             await session.commit()
             await callback.answer("Отмечено. Напоминания продолжатся до закрытия.")
-        elif action == "request_close":
+        elif action in {"request_close", "request_paid"}:
             case.status = CaseStatus.WAITING_CLOSE_COMMENT.value
             case.closed_by_user_id = callback.from_user.id
             await create_case_action(session, case.id, ActionType.CLOSE_REQUESTED, callback.from_user.id)
@@ -224,6 +424,26 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, session_factory: as
                 reply_markup=ForceReply(selective=True),
             )
             await callback.answer("Жду комментарий.")
+        elif action == "wait_service_amount":
+            case.status = CaseStatus.WAITING_SERVICE_AMOUNT.value
+            case.first_check_due_at = utcnow() + timedelta(
+                minutes=settings.service_amount_reminder_interval_minutes
+            )
+            await create_case_action(
+                session,
+                case.id,
+                ActionType.SERVICE_AMOUNT_REQUESTED,
+                callback.from_user.id,
+                callback.from_user.username,
+                callback.from_user.full_name,
+            )
+            await session.commit()
+            await callback.message.answer(
+                service_amount_request_text(case, settings.service_username),
+                reply_to_message_id=case.fp_message.telegram_message_id,
+                allow_sending_without_reply=False,
+            )
+            await callback.answer("Запросил сумму у сервиса.")
         elif action == "close_no_charge":
             case.status = CaseStatus.CLOSED_NO_CHARGE_REQUIRED.value
             case.closed_by_user_id = callback.from_user.id
@@ -278,7 +498,30 @@ async def _handle_fp_message(
             if car_match.status != MatchStatus.MATCHED:
                 await _send_diagnostic(bot, settings, text, parsed.plate_raw, car_match)
             else:
-                await create_damage_case_from_fp(session, fp)
+                first_due_at = None
+                if is_fp_inspection(text):
+                    first_due_at = fp_first_due_at(
+                        fp.created_at,
+                        settings.fp_manager_response_delay_minutes,
+                        settings.manager_days_off,
+                        settings.office_timezone,
+                    )
+                case = await create_damage_case_from_fp(session, fp, first_due_at)
+                if case:
+                    case.car = await get_car(session, case.car_id)
+                    case.fp_message = fp
+                if case and is_fp_inspection(text):
+                    mention = active_manager_mentions(
+                        settings.manager_days_off,
+                        fp.created_at.astimezone(ZoneInfo(settings.office_timezone)).weekday(),
+                    )
+                    await bot.send_message(
+                        fp.chat_id,
+                        pv_action_request_text(case, mention),
+                        reply_markup=reminder_keyboard(case.id, case.category),
+                        reply_to_message_id=fp.telegram_message_id,
+                        allow_sending_without_reply=False,
+                    )
         await session.commit()
     logger.info("Parsed FP message %s as %s", message.message_id, parsed.category)
 
@@ -313,6 +556,7 @@ async def _handle_pv_message(
             car_id=car_id,
             driver_name=parsed.driver_name,
             manager_name=parsed.manager_name,
+            manager_username=infer_manager_username(parsed.manager_name, settings.manager_directory),
             balance=parsed.balance,
             deposit=parsed.deposit,
             reason=parsed.reason,
@@ -323,8 +567,27 @@ async def _handle_pv_message(
         if car_id:
             cases = await open_cases_for_return(session, car_id, pv.created_at)
             await attach_return_to_cases(session, pv, cases, settings.reminder_first_delay_minutes)
+            for case in cases:
+                await bot.send_message(
+                    case.fp_message.chat_id,
+                    pv_action_request_text(case, f"@{case.manager_username}" if case.manager_username else None),
+                    reply_markup=reminder_keyboard(case.id, case.category),
+                    reply_to_message_id=case.fp_message.telegram_message_id,
+                    allow_sending_without_reply=False,
+                )
         await session.commit()
     logger.info("Parsed PV return %s for plate %s", message.message_id, parsed.plate_normalized)
+
+
+async def _case_has_manager_seen(session, case_id: int) -> bool:
+    return bool(
+        await session.scalar(
+            select(CaseAction.id).where(
+                CaseAction.case_id == case_id,
+                CaseAction.action_type == ActionType.MANAGER_SEEN.value,
+            )
+        )
+    )
 
 
 async def _try_close_waiting_comment(message: Message, session_factory: async_sessionmaker, text: str) -> None:

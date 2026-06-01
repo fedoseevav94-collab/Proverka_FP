@@ -5,8 +5,8 @@ from damage_bot.core.plates import make_message_link
 from damage_bot.db import DamageCase
 
 
-def reminder_text(case: DamageCase) -> str:
-    mention = f"@{case.manager_username}" if case.manager_username else (case.manager_name or "Менеджер")
+def reminder_text(case: DamageCase, mention_override: str | None = None) -> str:
+    mention = mention_override or (f"@{case.manager_username}" if case.manager_username else (case.manager_name or "Менеджер"))
     car = case.car
     plate = car.original_plate if car else ""
     if case.category == MessageCategory.DAMAGE_NO_CHARGE_REQUIRED.value:
@@ -95,3 +95,31 @@ def _car_label(case: DamageCase) -> str:
         return "-"
     return " ".join(part for part in [car.brand, car.model, car.original_plate] if part)
 
+
+
+def _workflow_context(case: DamageCase) -> str:
+    if case.pv_return_id:
+        return "Машина уже сдана в ПВ."
+    return "После осмотра в ФП нужно закрыть вопрос по повреждению."
+
+
+def service_amount_request_text(case: DamageCase, service_username: str) -> str:
+    return (
+        f"@{service_username.lstrip('@')} нужна оценка/сумма по повреждению.\n\n"
+        f"Авто: {_car_label(case)}\n"
+        f"Повреждение:\n{case.damage_description}\n\n"
+        "Ответьте reply к этому сообщению или к исходному ФП-сообщению."
+    )
+
+
+def pv_action_request_text(case: DamageCase, mention_override: str | None = None) -> str:
+    mention = f"{mention_override}\n\n" if mention_override else ""
+    return (
+        mention
+        + f"По авто {_car_label(case)} есть повреждение в ФП.\n"
+        + f"{_workflow_context(case)}\n\n"
+        + f"Водитель: {case.driver_name or '-'}\n"
+        f"Менеджер: {case.manager_name or '-'}\n\n"
+        f"Повреждение:\n{case.damage_description}\n\n"
+        "Выберите действие. Если нужна оценка сервиса, нажмите кнопку с @Norblacksmith."
+    )

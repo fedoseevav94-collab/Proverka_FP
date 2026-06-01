@@ -73,3 +73,7 @@ def parse_pv_return(text: str) -> ParsedPVReturn:
 def _field(text: str, label_pattern: str) -> str | None:
     match = re.search(rf"^{label_pattern}\s*:\s*(.+)$", text, re.IGNORECASE | re.MULTILINE)
     return match.group(1).strip() if match else None
+
+
+def is_fp_inspection(text: str) -> bool:
+    return bool(re.search(r"\bосмотр\w*", text.lower().replace("ё", "е"), re.IGNORECASE))

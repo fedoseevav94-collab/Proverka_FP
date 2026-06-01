@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from damage_bot.core.constants import ActionType, CaseStatus, FINAL_STATUSES, MessageCategory
 from damage_bot.core.matching import CarRef
@@ -62,7 +63,11 @@ async def create_case_action(
     )
 
 
-async def create_damage_case_from_fp(session: AsyncSession, fp: FPMessage) -> DamageCase | None:
+async def create_damage_case_from_fp(
+    session: AsyncSession,
+    fp: FPMessage,
+    manager_response_due_at: datetime | None = None,
+) -> DamageCase | None:
     if fp.category not in {
         MessageCategory.DAMAGE_CHARGE_REQUIRED.value,
         MessageCategory.DAMAGE_NO_CHARGE_REQUIRED.value,
@@ -80,6 +85,9 @@ async def create_damage_case_from_fp(session: AsyncSession, fp: FPMessage) -> Da
         status=CaseStatus.WAITING_FOR_RETURN.value,
         damage_description=fp.description or fp.text,
     )
+    if fp.category == MessageCategory.DAMAGE_CHARGE_REQUIRED.value and manager_response_due_at is not None:
+        case.status = CaseStatus.WAITING_MANAGER_ACTION.value
+        case.first_check_due_at = manager_response_due_at
     session.add(case)
     await session.flush()
     await create_case_action(session, case.id, ActionType.CREATED_FROM_FP)
@@ -91,6 +99,7 @@ async def open_cases_for_return(session: AsyncSession, car_id: int, returned_at:
     query = (
         select(DamageCase)
         .join(FPMessage, FPMessage.id == DamageCase.fp_message_id)
+        .options(selectinload(DamageCase.fp_message), selectinload(DamageCase.car))
         .where(
             DamageCase.car_id == car_id,
             DamageCase.status.not_in([status.value for status in FINAL_STATUSES]),
@@ -123,6 +132,7 @@ async def due_reminder_cases(session: AsyncSession, now: datetime) -> list[Damag
     active_statuses = [
         CaseStatus.WAITING_MANAGER_ACTION.value,
         CaseStatus.MANAGER_SEEN.value,
+        CaseStatus.WAITING_SERVICE_AMOUNT.value,
         CaseStatus.REMINDER_1_SENT.value,
         CaseStatus.REMINDER_2_SENT.value,
         CaseStatus.REMINDER_3_SENT.value,

@@ -19,6 +19,18 @@ class Settings(BaseSettings):
     admin_user_ids: str = Field(default="", alias="ADMIN_USER_IDS")
     admin_chat_id: int | None = Field(default=None, alias="ADMIN_CHAT_ID")
     fp_ignored_usernames: str = Field(default="Norblacksmith", alias="FP_IGNORED_USERNAMES")
+    service_username: str = Field(default="Norblacksmith", alias="SERVICE_USERNAME")
+    service_amount_reminder_interval_minutes: int = Field(default=10, alias="SERVICE_AMOUNT_REMINDER_INTERVAL_MINUTES")
+    fp_manager_response_delay_minutes: int = Field(default=45, alias="FP_MANAGER_RESPONSE_DELAY_MINUTES")
+    manager_days_off: str = Field(
+        default="pagorodu:thu,fri;Wuggfi:wed,thu;lalalas19:sat,sun;serb_98:sat,sun",
+        alias="MANAGER_DAYS_OFF",
+    )
+    office_timezone: str = Field(default="Europe/Moscow", alias="OFFICE_TIMEZONE")
+    manager_directory: str = Field(
+        default="pagorodu:Агаджанян Арман Андраникович;Wuggfi:Уметалыев Руслан Уметалыевич;lalalas19:Губейдулин Рафаэль Дамирович;serb_98:Петрович Александр Слободанович",
+        alias="MANAGER_DIRECTORY",
+    )
 
     @property
     def admins(self) -> set[int]:
@@ -27,3 +39,4 @@ class Settings(BaseSettings):
     @property
     def ignored_fp_usernames(self) -> set[str]:
         return {item.strip().lstrip("@").lower() for item in self.fp_ignored_usernames.split(",") if item.strip()}
+

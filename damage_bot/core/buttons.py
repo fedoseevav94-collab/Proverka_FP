@@ -20,7 +20,8 @@ def reminder_button_specs(case_id: int, category: str) -> list[ButtonSpec]:
             )
         ]
     return [
-        ButtonSpec(text="👁 Вижу", callback_data=f"seen:{case_id}"),
-        ButtonSpec(text="✅ Закрыть", callback_data=f"request_close:{case_id}"),
+        ButtonSpec(text="⏳ Жду сумму от @Norblacksmith", callback_data=f"wait_service_amount:{case_id}"),
+        ButtonSpec(text="✅ Водитель оплатил", callback_data=f"request_paid:{case_id}"),
+        ButtonSpec(text="✅ Списание не требуется", callback_data=f"close_no_charge:{case_id}"),
     ]
 

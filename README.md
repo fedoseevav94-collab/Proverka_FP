@@ -45,3 +45,10 @@ For MVP hosting with SQLite, make sure the host keeps the working directory or d
 - PV messages with `Аренда | Сдача` and `Аренда | Пересадка` both trigger return matching for the returned car.
 - Reminder and FP escalation messages are sent as replies to the original FP message (`сдал`, `осмотр`, or `пересадка`) so the whole chain stays attached to the source report.
 - SQLite is used by default for MVP. Use an async SQLAlchemy URL such as `postgresql+asyncpg://...` for production.
+
+## FP inspection workflow
+
+- `сдал` and `пересадка` damage cases wait for a matching PV return event, then the bot immediately replies in FP with action buttons and starts the first reminder due in 10 minutes.
+- `осмотр` damage cases do not wait for PV. The bot immediately replies in FP with action buttons for active managers, then schedules the first reminder after 45 minutes, respecting office hours and manager days off.
+- Buttons for damage cases: wait for service amount from `@Norblacksmith`, driver paid with required manager comment, or no charge required.
+- If `@Norblacksmith` is selected, the bot reminds him every 10 minutes until he replies with the amount/evaluation in FP.
