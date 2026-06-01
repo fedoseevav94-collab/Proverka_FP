@@ -48,7 +48,34 @@ def test_fp_parser_regular_damage() -> None:
 def test_fp_ignores_service_and_cleaning_from_screenshots() -> None:
     assert classify_fp_text("т579нм797\nВ слесарке") == MessageCategory.SERVICE_IGNORED
     assert classify_fp_text("С771сн761 сдал\nСильно ведет вправо") == MessageCategory.SERVICE_IGNORED
+    assert classify_fp_text("Н350ос797 сдал\nПодошло ТО") == MessageCategory.SERVICE_IGNORED
+    assert classify_fp_text("Гремит что то сзади") == MessageCategory.INFO_IGNORED
     assert classify_fp_text("О864оа797 сдал\nПылесосит и моет коврики") == MessageCategory.CLEANING_IGNORED
+
+
+def test_fp_classifier_real_damage_variants_from_sheet() -> None:
+    damage_examples = [
+        "Прокол заднего правого колеса",
+        "Спускает заднее правое колесо",
+        "Отсутствует молдинг на правой передней стойке 2000",
+        "Лобовое стекло нужно менять",
+        "сломана пластиковая накладка на левое переднее крыло",
+        "Грязное авто. Бензина нет Кусок пленки на капоте порван",
+        "Ремонт колеса 500 р",
+        "Поцарапан корпус правого бокового зеркала",
+        "Грыжа на переднем правом колесе 6000",
+        "Саморез в переднем правом колесе",
+        "Водитель влетел в бордюр, оставляет на ремонт",
+    ]
+    for text in damage_examples:
+        assert classify_fp_text(text) == MessageCategory.DAMAGE_CHARGE_REQUIRED
+
+
+def test_fp_classifier_real_non_damage_variants_from_sheet() -> None:
+    assert classify_fp_text("Грязное авто") == MessageCategory.CLEANING_IGNORED
+    assert classify_fp_text("Машина плохо помыта") == MessageCategory.CLEANING_IGNORED
+    assert classify_fp_text("Мало топлива") == MessageCategory.INFO_IGNORED
+    assert classify_fp_text("Нет бензина (лампа горит)") == MessageCategory.INFO_IGNORED
 
 
 def test_pv_parser_extracts_return_fields() -> None:

@@ -14,29 +14,122 @@ NO_CHARGE_PATTERNS = [
     r"передан[оа]?\s+в\s+офис",
 ]
 
-DAMAGE_PATTERNS = [
+STRONG_DAMAGE_PATTERNS = [
     r"поврежд",
-    r"царапин",
+    r"повредил",
+    r"повежд",
+    r"царап",
+    r"поцарап",
+    r"счесан",
     r"помят",
+    r"замят",
+    r"смят",
+    r"вмят",
     r"разбит",
+    r"разбил",
     r"\bдтп\b",
-    r"трещин",
+    r"трещ",
+    r"тресн",
+    r"стезин",
+    r"лопнул",
+    r"лопнув",
     r"скол",
-    r"вмятин",
+    r"сколот",
     r"удар",
+    r"зацеп",
+    r"задел",
+    r"задир",
+    r"зат[её]рт",
+    r"зат[её]ртост",
+    r"прит[её]р",
+    r"прит[её]ртост",
+    r"пот[её]рт",
+    r"пот[её]ртост",
+    r"содран",
+    r"ободран",
+    r"сорван",
+    r"слом",
+    r"сломан",
+    r"отлом",
+    r"оторван",
+    r"отош[её]л",
+    r"слетел",
+    r"выпал",
+    r"деформ",
+    r"погнут",
+    r"пробит",
+    r"пробил",
+    r"прокол",
+    r"проколот",
+    r"порез",
+    r"порван",
+    r"прожжен",
+    r"дыр",
+    r"грыж",
+    r"спуска[ею]т",
+    r"спущен",
+    r"саморез",
+    r"шуруп",
+    r"гвозд",
+    r"бордюр",
+    r"бордюрк",
+    r"нет\s+(?:запасн|колес|диск|молдинг|накладк|подкрыл|колпак|заглушк|рамк|номер|букв|эмблем|лючок|крышк|полк|крюк)",
+    r"отсутств(?:ует|уют)\s+(?:молдинг|накладк|подкрыл|колпак|заглушк|рамк|номер|букв|эмблем|лючок|крышк|полк|крюк|треугольник|повторитель|реш[её]тк)",
+    r"потер(?:ян|я|ял|яны)",
+    r"утерян",
+    r"замен[ауы]?\s+(?:лобов|стекл|дворник|трапец|подкрыл|покрыш|резин|шин|колес|диск|радиатор|капот|бампер|крыл)",
+    r"(?:лобов|стекл).*менять",
+    r"(?:резин|покрыш|шин).*вине\s+водител",
+    r"списать\s+за\s+резин",
+    r"ремонт\s+(?:колес|шин|покрыш|диск|бампер|стекл|лобов|радиатор|крыл|капот)",
+]
+
+DAMAGE_PART_PATTERNS = [
     r"бампер",
     r"двер",
+    r"крыл",
+    r"капот",
+    r"багажник",
+    r"порог",
+    r"зеркал",
+    r"лобов",
+    r"фара",
+    r"фонар",
+    r"птф",
+    r"реш[её]тк",
+    r"радиатор",
+    r"поддон",
+    r"молдинг",
+    r"накладк",
+    r"подкрыл",
+    r"арка",
+    r"пленк",
+    r"пластик",
+    r"рамк[аи]\s+(?:гос\s*)?номер",
+    r"номерн(?:ой|ого)\s+знак",
+    r"гос\s*номер",
+    r"диск(?:\s+колес)?",
+    r"колес",
+    r"покрыш",
+    r"шина",
+    r"резин",
 ]
+
+DAMAGE_PATTERNS = STRONG_DAMAGE_PATTERNS + DAMAGE_PART_PATTERNS
 
 SERVICE_PATTERNS = [
     r"слесарк",
-    r"\bто\b",
+    r"(?<!что )(?<!-)\bто\b(?!-)",
     r"подошло\s+то",
     r"вед[её]т\s+вправо",
-    r"ремонт",
+    r"сход\s*развал",
+    r"не\s+работает\s+конд",
+    r"акпп",
+    r"ходов",
     r"диагностик",
     r"ошибк",
     r"горит\s+ошибк",
+    r"ремонт",
 ]
 
 CLEANING_PATTERNS = [
@@ -45,6 +138,14 @@ CLEANING_PATTERNS = [
     r"ковр",
     r"мойк",
     r"помыл",
+    r"грязн",
+    r"плохо\s+помыт",
+    r"не\s+мыл",
+    r"уборк",
+    r"химчистк",
+    r"прокур",
+    r"курени",
+    r"пахнет\s+(?:сигарет|табак|курев)",
 ]
 
 INVALID_CLOSE_PATTERNS = [
@@ -64,13 +165,17 @@ def _matches(patterns: list[str], text: str) -> bool:
 
 def classify_fp_text(text: str) -> MessageCategory:
     normalized = text.lower().replace("ё", "е")
+    if _matches(NO_CHARGE_PATTERNS, normalized):
+        return MessageCategory.DAMAGE_NO_CHARGE_REQUIRED
+    if _matches(STRONG_DAMAGE_PATTERNS, normalized):
+        return MessageCategory.DAMAGE_CHARGE_REQUIRED
     if _matches(SERVICE_PATTERNS, normalized):
+        if _matches(DAMAGE_PART_PATTERNS, normalized):
+            return MessageCategory.DAMAGE_CHARGE_REQUIRED
         return MessageCategory.SERVICE_IGNORED
     if _matches(CLEANING_PATTERNS, normalized):
         return MessageCategory.CLEANING_IGNORED
-    if _matches(NO_CHARGE_PATTERNS, normalized):
-        return MessageCategory.DAMAGE_NO_CHARGE_REQUIRED
-    if _matches(DAMAGE_PATTERNS, normalized):
+    if _matches(DAMAGE_PART_PATTERNS, normalized):
         return MessageCategory.DAMAGE_CHARGE_REQUIRED
     return MessageCategory.INFO_IGNORED
 
