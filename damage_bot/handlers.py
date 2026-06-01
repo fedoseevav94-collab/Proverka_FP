@@ -367,7 +367,7 @@ async def _send_diagnostic(bot: Bot, settings: Settings, text: str, plate: str |
 
 
 async def _answer_no_access(message: Message) -> None:
-    await message.answer("Не лезь куда не надо 😄 Тут кнопки только для Fedos_AV.")
+    await message.answer("Не лезь куда не надо 😄 Тут кнопки только для директора.")
 
 
 def _has_bot_access(message: Message, settings: Settings) -> bool:
