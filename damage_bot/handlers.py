@@ -17,7 +17,7 @@ from damage_bot.core.constants import ActionType, CaseStatus, FINAL_STATUSES, Me
 from damage_bot.core.fp_schedule import fp_first_due_at
 from damage_bot.core.managers import active_manager_mentions, infer_manager_username, parse_manager_days_off
 from damage_bot.core.matching import MatchStatus, match_car
-from damage_bot.core.parsers import is_fp_inspection, parse_fp_message, parse_pv_return
+from damage_bot.core.parsers import is_fp_inspection, parse_fp_message, parse_pv_issue, parse_pv_return
 from damage_bot.core.plates import equivalent_chat_ids, find_plate
 from damage_bot.db import CaseAction, DamageCase, FPMessage, PVReturn
 from damage_bot.fleet import reload_cars_from_excel
@@ -34,6 +34,7 @@ from damage_bot.repository import (
     open_cases,
     open_cases_for_return,
     waiting_comment_case_for_user,
+    upsert_car_from_plate,
     utcnow,
 )
 
@@ -535,6 +536,11 @@ async def _handle_pv_message(
 ) -> None:
     parsed = parse_pv_return(text)
     if not parsed.is_return:
+        issue = parse_pv_issue(text)
+        if issue.operation_type == "Выдача":
+            async with session_factory() as session:
+                await upsert_car_from_plate(session, issue.plate_raw, issue.car_model)
+                await session.commit()
         return
     async with session_factory() as session:
         if await find_pv_return(session, message.chat.id, message.message_id):
@@ -542,8 +548,8 @@ async def _handle_pv_message(
         cars = await car_refs(session)
         car_match = match_car(parsed.plate_raw, cars)
         if car_match.status != MatchStatus.MATCHED or not car_match.car:
-            await _send_diagnostic(bot, settings, text, parsed.plate_raw, car_match)
-            car_id = None
+            car = await upsert_car_from_plate(session, parsed.plate_raw, parsed.car_model)
+            car_id = car.id if car else None
         else:
             car_id = car_match.car.id
         pv = PVReturn(

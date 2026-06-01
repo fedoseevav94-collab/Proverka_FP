@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from damage_bot.core.classifier import classify_close_comment, classify_fp_text
 from damage_bot.core.constants import CaseStatus, MessageCategory
 from damage_bot.core.matching import CarRef, MatchStatus, match_car
-from damage_bot.core.parsers import is_fp_inspection, parse_fp_message, parse_pv_return
+from damage_bot.core.parsers import is_fp_inspection, parse_fp_message, parse_pv_issue, parse_pv_return
 from damage_bot.core.plates import digits_key, equivalent_chat_ids, normalize_plate
 from damage_bot.core.workflow import ReminderSchedule, escalation_due_at, reminder_due_at
 from damage_bot.core.fp_schedule import fp_first_due_at
@@ -161,3 +161,16 @@ def test_infer_manager_username_by_full_or_short_employee_name() -> None:
     assert infer_manager_username("Губейдулин Рафаэль", MANAGER_DIRECTORY_FIXTURE) == "lalalas19"
     assert infer_manager_username("Петрович Александр", MANAGER_DIRECTORY_FIXTURE) == "serb_98"
     assert infer_manager_username("Иванов Евгений Александрович", MANAGER_DIRECTORY_FIXTURE) is None
+
+
+def test_pv_issue_parser_extracts_new_car() -> None:
+    parsed = parse_pv_issue(
+        "🟩 Аренда | Выдача Haval F7 т553нм797\n\n"
+        "Водитель: Оверко Богдан Евгеньевич\n"
+        "Сотрудник: Агаджанян Арман"
+    )
+    assert parsed.operation_type == "Выдача"
+    assert parsed.plate_normalized == "T553HM797"
+    assert parsed.car_model == "Haval F7"
+    assert parsed.driver_name == "Оверко Богдан Евгеньевич"
+    assert parsed.manager_name == "Агаджанян Арман"

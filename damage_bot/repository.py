@@ -8,6 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from damage_bot.core.constants import ActionType, CaseStatus, FINAL_STATUSES, MessageCategory
 from damage_bot.core.matching import CarRef
+from damage_bot.core.plates import digits_key, normalize_plate
 from damage_bot.db import Car, CaseAction, DamageCase, FPMessage, PVReturn
 
 
@@ -24,6 +25,44 @@ async def car_refs(session: AsyncSession) -> list[CarRef]:
         )
         for car in rows
     ]
+
+
+async def upsert_car_from_plate(
+    session: AsyncSession,
+    plate: str | None,
+    car_model: str | None = None,
+) -> Car | None:
+    normalized = normalize_plate(plate)
+    if not normalized:
+        return None
+    car = await session.scalar(select(Car).where(Car.normalized_plate == normalized))
+    brand, model = _split_car_model(car_model)
+    if car:
+        if brand and not car.brand:
+            car.brand = brand
+        if model and not car.model:
+            car.model = model
+        return car
+    car = Car(
+        brand=brand,
+        model=model,
+        original_plate=plate or normalized,
+        normalized_plate=normalized,
+        digits_key=digits_key(normalized),
+        status="DISCOVERED_FROM_PV",
+    )
+    session.add(car)
+    await session.flush()
+    return car
+
+
+def _split_car_model(value: str | None) -> tuple[str | None, str | None]:
+    if not value:
+        return None, None
+    parts = value.strip().split(maxsplit=1)
+    if len(parts) == 1:
+        return parts[0], None
+    return parts[0], parts[1]
 
 
 async def get_car(session: AsyncSession, car_id: int) -> Car | None:

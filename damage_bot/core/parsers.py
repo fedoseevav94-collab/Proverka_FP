@@ -77,3 +77,27 @@ def _field(text: str, label_pattern: str) -> str | None:
 
 def is_fp_inspection(text: str) -> bool:
     return bool(re.search(r"\bосмотр\w*", text.lower().replace("ё", "е"), re.IGNORECASE))
+
+
+def parse_pv_issue(text: str) -> ParsedPVReturn:
+    operation_match = re.search(r"аренда\s*\|\s*выдача", text, re.IGNORECASE)
+    if not operation_match:
+        return ParsedPVReturn(is_return=False)
+    plate_raw = find_plate(text)
+    title_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    car_model = None
+    if plate_raw and title_line:
+        car_part = re.sub(r"^.*?аренда\s*\|\s*выдача", "", title_line, flags=re.IGNORECASE)
+        car_model = car_part.replace(plate_raw, "").strip(" -|")
+    return ParsedPVReturn(
+        is_return=False,
+        operation_type="Выдача",
+        plate_raw=plate_raw,
+        plate_normalized=normalize_plate(plate_raw),
+        car_model=car_model or None,
+        driver_name=_field(text, "Водитель"),
+        manager_name=_field(text, "Сотрудник"),
+        balance=_field(text, r"Баланс \(в т\.ч\. 1С\)") or _field(text, "Баланс"),
+        deposit=_field(text, "Депозит"),
+        reason=_field(text, "Причина"),
+    )
