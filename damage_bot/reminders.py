@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from datetime import timedelta
+
+from aiogram import Bot
+from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.orm import selectinload
+from sqlalchemy import select
+
+from damage_bot.config import Settings
+from damage_bot.core.constants import ActionType, CaseStatus
+from damage_bot.db import DamageCase
+from damage_bot.keyboards import reminder_keyboard
+from damage_bot.messages import escalation_text, reminder_text
+from damage_bot.repository import create_case_action, due_reminder_cases, utcnow
+
+logger = logging.getLogger(__name__)
+
+
+async def reminder_loop(bot: Bot, session_factory: async_sessionmaker, settings: Settings) -> None:
+    while True:
+        try:
+            await process_due_cases(bot, session_factory, settings)
+        except Exception:
+            logger.exception("Reminder loop failed")
+        await asyncio.sleep(30)
+
+
+async def process_due_cases(bot: Bot, session_factory: async_sessionmaker, settings: Settings) -> None:
+    now = utcnow()
+    async with session_factory() as session:
+        due = await due_reminder_cases(session, now)
+        for case_stub in due:
+            case = await session.scalar(
+                select(DamageCase)
+                .where(DamageCase.id == case_stub.id)
+                .options(
+                    selectinload(DamageCase.car),
+                    selectinload(DamageCase.fp_message),
+                    selectinload(DamageCase.pv_return),
+                )
+            )
+            if not case:
+                continue
+            if case.reminders_sent >= settings.max_reminders:
+                await _escalate(bot, settings, session, case)
+                continue
+            await _send_reminder(bot, session, case, settings)
+        await session.commit()
+
+
+async def _send_reminder(bot: Bot, session, case: DamageCase, settings: Settings) -> None:
+    await bot.send_message(
+        case.fp_message.chat_id,
+        reminder_text(case),
+        reply_markup=reminder_keyboard(case.id, case.category),
+        reply_to_message_id=case.fp_message.telegram_message_id,
+        allow_sending_without_reply=False,
+    )
+    case.reminders_sent += 1
+    case.last_reminder_at = utcnow()
+    case.status = getattr(CaseStatus, f"REMINDER_{case.reminders_sent}_SENT").value
+    case.first_check_due_at = case.last_reminder_at + timedelta(minutes=settings.reminder_interval_minutes)
+    await create_case_action(session, case.id, ActionType.REMINDER_SENT)
+
+
+async def _escalate(bot: Bot, settings: Settings, session, case: DamageCase) -> None:
+    text = escalation_text(case)
+    target_chat_id = settings.admin_chat_id or case.fp_message.chat_id
+    if settings.admin_chat_id:
+        await bot.send_message(target_chat_id, text)
+    else:
+        await bot.send_message(
+            target_chat_id,
+            f"@{settings.supervisor_username}\n\n{text}",
+            reply_to_message_id=case.fp_message.telegram_message_id,
+            allow_sending_without_reply=False,
+        )
+    case.status = CaseStatus.ESCALATED_TO_SUPERVISOR.value
+    case.escalated_at = utcnow()
+    await create_case_action(session, case.id, ActionType.ESCALATED)
