@@ -1,0 +1,25 @@
+[project]
+name = "damage-charge-control-bot"
+version = "0.1.0"
+description = "Telegram bot for controlling damage charge closure after car returns."
+requires-python = ">=3.11"
+dependencies = [
+    "aiogram>=3.6,<4",
+    "aiosqlite>=0.19",
+    "pandas>=2.0",
+    "openpyxl>=3.1",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+    "SQLAlchemy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
