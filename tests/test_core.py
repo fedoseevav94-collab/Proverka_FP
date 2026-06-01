@@ -217,3 +217,10 @@ def test_cars_excel_path_falls_back_to_fleet_file(tmp_path) -> None:
     fallback.write_text("placeholder", encoding="utf-8")
 
     assert resolve_cars_excel_path(str(tmp_path / "Парковые авто(108).xlsx")) == fallback
+
+
+def test_cars_excel_path_accepts_accidental_env_assignment(tmp_path) -> None:
+    fleet_file = tmp_path / "Парковые авто(339).xlsx"
+    fleet_file.write_text("placeholder", encoding="utf-8")
+
+    assert resolve_cars_excel_path(f"CARS_EXCEL_PATH={fleet_file}") == fleet_file

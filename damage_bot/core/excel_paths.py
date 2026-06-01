@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def resolve_cars_excel_path(path: str) -> Path:
-    requested = Path(path)
+    requested = Path(_clean_path_value(path))
     if requested.exists():
         return requested
 
@@ -22,3 +22,10 @@ def resolve_cars_excel_path(path: str) -> Path:
         f"Не найден файл: {requested}. "
         f"Также проверил автопоиск: {parent / 'Парковые авто*.xlsx'}"
     )
+
+
+def _clean_path_value(path: str) -> str:
+    value = path.strip().strip("\"'")
+    if value.startswith("CARS_EXCEL_PATH="):
+        value = value.split("=", 1)[1].strip().strip("\"'")
+    return value
