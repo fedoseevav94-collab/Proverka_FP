@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     pv_chat_id: int = Field(default=1001941984098, alias="PV_CHAT_ID")
     supervisor_username: str = Field(default="fedos_av", alias="SUPERVISOR_USERNAME")
     database_url: str = Field(default="sqlite+aiosqlite:///bot.db", alias="DATABASE_URL")
+    data_dir: str = Field(default="/app/data", alias="DATA_DIR")
     cars_excel_path: str = Field(default="Парковые авто.xlsx", alias="CARS_EXCEL_PATH")
     reminder_first_delay_minutes: int = Field(default=10, alias="REMINDER_FIRST_DELAY_MINUTES")
     reminder_interval_minutes: int = Field(default=30, alias="REMINDER_INTERVAL_MINUTES")
@@ -39,4 +40,3 @@ class Settings(BaseSettings):
     @property
     def ignored_fp_usernames(self) -> set[str]:
         return {item.strip().lstrip("@").lower() for item in self.fp_ignored_usernames.split(",") if item.strip()}
-

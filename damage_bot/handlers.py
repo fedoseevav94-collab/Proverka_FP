@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
@@ -51,6 +52,9 @@ def register_handlers(dp: Dispatcher, session_factory: async_sessionmaker, setti
     async def reload_wrapper(message: Message) -> None:
         await handle_reload_cars(message, session_factory, settings)
 
+    async def fleet_excel_document_wrapper(message: Message, bot: Bot) -> None:
+        await handle_fleet_excel_document(message, bot, session_factory, settings)
+
     async def status_wrapper(message: Message) -> None:
         await handle_status(message, session_factory, settings)
 
@@ -72,6 +76,7 @@ def register_handlers(dp: Dispatcher, session_factory: async_sessionmaker, setti
     dp.message.register(start_wrapper, Command("start"))
     dp.message.register(help_wrapper, Command("help"))
     dp.message.register(reload_wrapper, Command("reload_cars"))
+    dp.message.register(fleet_excel_document_wrapper, F.document)
     dp.message.register(status_wrapper, Command("status"))
     dp.message.register(open_cases_wrapper, Command("open_cases"))
     dp.message.register(close_case_wrapper, Command("close_case"))
@@ -97,6 +102,7 @@ async def handle_help(message: Message, settings: Settings) -> None:
         return
     await message.answer(
         "/reload_cars — загрузить авто из Excel\n"
+        "Можно отправить Excel-файл с авто прямо сюда, я сохраню и загружу его.\n"
         "/status — краткий статус\n"
         "/open_cases — активные кейсы\n"
         "/close_case {id} {comment} — закрыть кейс\n"
@@ -124,6 +130,38 @@ async def handle_reload_cars(message: Message, session_factory: async_sessionmak
         await message.answer("Не удалось загрузить авто из Excel. Подробности записал в лог.")
         return
     await message.answer(f"Загружено авто: {count}")
+
+
+async def handle_fleet_excel_document(
+    message: Message,
+    bot: Bot,
+    session_factory: async_sessionmaker,
+    settings: Settings,
+) -> None:
+    if not _has_bot_access(message, settings):
+        await _answer_no_access(message)
+        return
+    if not message.document:
+        return
+    file_name = message.document.file_name or "cars.xlsx"
+    if not file_name.lower().endswith((".xlsx", ".xls")):
+        return
+
+    data_dir = Path(settings.data_dir)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    destination = data_dir / file_name
+
+    try:
+        await bot.download(message.document, destination=destination)
+        async with session_factory() as session:
+            count = await reload_cars_from_excel(session, str(destination))
+            await session.commit()
+    except Exception:
+        logger.exception("Failed to save and reload fleet Excel")
+        await message.answer("Не удалось сохранить или загрузить Excel-файл. Подробности записал в лог.")
+        return
+
+    await message.answer(f"Excel сохранён: {destination}\nЗагружено авто: {count}")
 
 
 async def handle_status(message: Message, session_factory: async_sessionmaker, settings: Settings) -> None:
