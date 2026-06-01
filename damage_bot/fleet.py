@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
-import pandas as pd
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from damage_bot.core.excel_paths import resolve_cars_excel_path
 from damage_bot.core.plates import digits_key, normalize_plate
 from damage_bot.db import Car
 
@@ -19,7 +18,9 @@ STATUS_COLUMNS = ("статус", "status")
 
 
 async def reload_cars_from_excel(session: AsyncSession, path: str) -> int:
-    df = pd.read_excel(Path(path))
+    import pandas as pd
+
+    df = pd.read_excel(resolve_cars_excel_path(path))
     await session.execute(delete(Car))
     count = 0
     for _, row in df.iterrows():
@@ -46,8 +47,13 @@ async def reload_cars_from_excel(session: AsyncSession, path: str) -> int:
 
 
 def _clean(value: object) -> str | None:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    if value is None:
         return None
+    try:
+        if value != value:
+            return None
+    except Exception:
+        pass
     text = str(value).strip()
     return text or None
 
@@ -58,4 +64,3 @@ def _pick(row: dict[str, str | None], needles: tuple[str, ...]) -> str | None:
         if value and any(needle in lowered for needle in needles):
             return value
     return None
-

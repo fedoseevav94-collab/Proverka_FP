@@ -108,9 +108,21 @@ async def handle_reload_cars(message: Message, session_factory: async_sessionmak
     if not _has_bot_access(message, settings):
         await _answer_no_access(message)
         return
-    async with session_factory() as session:
-        count = await reload_cars_from_excel(session, settings.cars_excel_path)
-        await session.commit()
+    try:
+        async with session_factory() as session:
+            count = await reload_cars_from_excel(session, settings.cars_excel_path)
+            await session.commit()
+    except FileNotFoundError as exc:
+        await message.answer(
+            "Не нашёл Excel-файл с авто.\n\n"
+            f"{exc}\n\n"
+            "Проверь, что файл загружен в /app/data и что переменная CARS_EXCEL_PATH указывает на него."
+        )
+        return
+    except Exception:
+        logger.exception("Failed to reload cars from Excel")
+        await message.answer("Не удалось загрузить авто из Excel. Подробности записал в лог.")
+        return
     await message.answer(f"Загружено авто: {count}")
 
 

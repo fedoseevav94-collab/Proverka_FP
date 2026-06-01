@@ -8,6 +8,7 @@ from damage_bot.core.plates import digits_key, equivalent_chat_ids, normalize_pl
 from damage_bot.core.workflow import ReminderSchedule, escalation_due_at, reminder_due_at
 from damage_bot.core.fp_schedule import fp_first_due_at
 from damage_bot.core.managers import infer_manager_username, parse_manager_days_off
+from damage_bot.core.excel_paths import resolve_cars_excel_path
 
 
 MANAGER_DIRECTORY_FIXTURE = "pagorodu:Агаджанян Арман Андраникович;Wuggfi:Уметалыев Руслан Уметалыевич;lalalas19:Губейдулин Рафаэль Дамирович;serb_98:Петрович Александр Слободанович"
@@ -209,3 +210,10 @@ def test_pv_issue_parser_extracts_new_car() -> None:
     assert parsed.car_model == "Haval F7"
     assert parsed.driver_name == "Оверко Богдан Евгеньевич"
     assert parsed.manager_name == "Агаджанян Арман"
+
+
+def test_cars_excel_path_falls_back_to_fleet_file(tmp_path) -> None:
+    fallback = tmp_path / "Парковые авто(339).xlsx"
+    fallback.write_text("placeholder", encoding="utf-8")
+
+    assert resolve_cars_excel_path(str(tmp_path / "Парковые авто(108).xlsx")) == fallback
