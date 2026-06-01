@@ -46,11 +46,14 @@ def find_plate(text: str | None) -> str | None:
 
 
 def equivalent_chat_ids(configured: int, incoming: int) -> bool:
-    if configured == incoming:
-        return True
-    configured_s = str(configured)
-    incoming_s = str(incoming)
-    return configured_s.removeprefix("-100") == incoming_s.removeprefix("-100")
+    return bool(_chat_id_variants(configured) & _chat_id_variants(incoming))
+
+
+def _chat_id_variants(chat_id: int) -> set[str]:
+    raw = str(chat_id)
+    unsigned = raw.removeprefix("-")
+    internal = unsigned[3:] if unsigned.startswith("100") else unsigned
+    return {raw, unsigned, internal, f"-{unsigned}", f"-100{internal}", f"100{internal}"}
 
 
 def make_message_link(chat_id: int, message_id: int) -> str:

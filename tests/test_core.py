@@ -4,7 +4,7 @@ from damage_bot.core.classifier import classify_close_comment, classify_fp_text
 from damage_bot.core.constants import CaseStatus, MessageCategory
 from damage_bot.core.matching import CarRef, MatchStatus, match_car
 from damage_bot.core.parsers import parse_fp_message, parse_pv_return
-from damage_bot.core.plates import digits_key, normalize_plate
+from damage_bot.core.plates import digits_key, equivalent_chat_ids, normalize_plate
 from damage_bot.core.workflow import ReminderSchedule, escalation_due_at, reminder_due_at
 
 
@@ -17,6 +17,12 @@ def test_plate_normalization() -> None:
 def test_digits_key() -> None:
     assert digits_key("O917HX797") == "917797"
 
+
+
+
+def test_equivalent_chat_ids_supports_supergroup_formats() -> None:
+    assert equivalent_chat_ids(1001905865504, -1001905865504)
+    assert equivalent_chat_ids(-1001941984098, 1001941984098)
 
 def test_fp_parser_damage_no_charge() -> None:
     parsed = parse_fp_message(

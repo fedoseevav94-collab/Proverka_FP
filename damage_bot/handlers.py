@@ -37,25 +37,25 @@ logger = logging.getLogger(__name__)
 
 def register_handlers(dp: Dispatcher, session_factory: async_sessionmaker, settings: Settings) -> None:
     async def start_wrapper(message: Message) -> None:
-        await handle_start(message)
+        await handle_start(message, settings)
 
     async def help_wrapper(message: Message) -> None:
-        await handle_help(message)
+        await handle_help(message, settings)
 
     async def reload_wrapper(message: Message) -> None:
         await handle_reload_cars(message, session_factory, settings)
 
     async def status_wrapper(message: Message) -> None:
-        await handle_status(message, session_factory)
+        await handle_status(message, session_factory, settings)
 
     async def open_cases_wrapper(message: Message) -> None:
-        await handle_open_cases(message, session_factory)
+        await handle_open_cases(message, session_factory, settings)
 
     async def close_case_wrapper(message: Message) -> None:
-        await handle_close_case(message, session_factory)
+        await handle_close_case(message, session_factory, settings)
 
     async def cancel_case_wrapper(message: Message) -> None:
-        await handle_cancel_case(message, session_factory)
+        await handle_cancel_case(message, session_factory, settings)
 
     async def callback_wrapper(callback: CallbackQuery, bot: Bot) -> None:
         await handle_callback(callback, bot, session_factory)
@@ -74,11 +74,17 @@ def register_handlers(dp: Dispatcher, session_factory: async_sessionmaker, setti
     dp.message.register(message_wrapper)
 
 
-async def handle_start(message: Message) -> None:
+async def handle_start(message: Message, settings: Settings) -> None:
+    if not _has_bot_access(message, settings):
+        await _answer_no_access(message)
+        return
     await message.answer("Бот контроля закрытия повреждений запущен. Используйте /help.")
 
 
-async def handle_help(message: Message) -> None:
+async def handle_help(message: Message, settings: Settings) -> None:
+    if not _has_bot_access(message, settings):
+        await _answer_no_access(message)
+        return
     await message.answer(
         "/reload_cars — загрузить авто из Excel\n"
         "/status — краткий статус\n"
@@ -89,8 +95,8 @@ async def handle_help(message: Message) -> None:
 
 
 async def handle_reload_cars(message: Message, session_factory: async_sessionmaker, settings: Settings) -> None:
-    if not _is_admin(message, settings):
-        await message.answer("Команда доступна только администратору.")
+    if not _has_bot_access(message, settings):
+        await _answer_no_access(message)
         return
     async with session_factory() as session:
         count = await reload_cars_from_excel(session, settings.cars_excel_path)
@@ -98,13 +104,19 @@ async def handle_reload_cars(message: Message, session_factory: async_sessionmak
     await message.answer(f"Загружено авто: {count}")
 
 
-async def handle_status(message: Message, session_factory: async_sessionmaker) -> None:
+async def handle_status(message: Message, session_factory: async_sessionmaker, settings: Settings) -> None:
+    if not _has_bot_access(message, settings):
+        await _answer_no_access(message)
+        return
     async with session_factory() as session:
         cases = await open_cases(session)
     await message.answer(f"Открытых кейсов: {len(cases)}")
 
 
-async def handle_open_cases(message: Message, session_factory: async_sessionmaker) -> None:
+async def handle_open_cases(message: Message, session_factory: async_sessionmaker, settings: Settings) -> None:
+    if not _has_bot_access(message, settings):
+        await _answer_no_access(message)
+        return
     async with session_factory() as session:
         cases = await open_cases(session)
         lines = []
@@ -118,7 +130,10 @@ async def handle_open_cases(message: Message, session_factory: async_sessionmake
     await message.answer("\n".join(lines) if lines else "Открытых кейсов нет.")
 
 
-async def handle_close_case(message: Message, session_factory: async_sessionmaker) -> None:
+async def handle_close_case(message: Message, session_factory: async_sessionmaker, settings: Settings) -> None:
+    if not _has_bot_access(message, settings):
+        await _answer_no_access(message)
+        return
     parts = (message.text or "").split(maxsplit=2)
     if len(parts) < 3 or not parts[1].isdigit():
         await message.answer("Формат: /close_case {case_id} {comment}")
@@ -138,7 +153,10 @@ async def handle_close_case(message: Message, session_factory: async_sessionmake
     await message.answer(f"Кейс #{parts[1]} закрыт: {close_status.value}")
 
 
-async def handle_cancel_case(message: Message, session_factory: async_sessionmaker) -> None:
+async def handle_cancel_case(message: Message, session_factory: async_sessionmaker, settings: Settings) -> None:
+    if not _has_bot_access(message, settings):
+        await _answer_no_access(message)
+        return
     parts = (message.text or "").split(maxsplit=2)
     if len(parts) < 3 or not parts[1].isdigit():
         await message.answer("Формат: /cancel_case {case_id} {reason}")
@@ -348,8 +366,17 @@ async def _send_diagnostic(bot: Bot, settings: Settings, text: str, plate: str |
     )
 
 
-def _is_admin(message: Message, settings: Settings) -> bool:
-    return not settings.admins or bool(message.from_user and message.from_user.id in settings.admins)
+async def _answer_no_access(message: Message) -> None:
+    await message.answer("Не лезь куда не надо 😄 Тут кнопки только для Fedos_AV.")
+
+
+def _has_bot_access(message: Message, settings: Settings) -> bool:
+    if not message.from_user:
+        return False
+    if message.from_user.id in settings.admins:
+        return True
+    username = (message.from_user.username or "").lstrip("@").lower()
+    return username == settings.supervisor_username.lstrip("@").lower()
 
 
 def _is_ignored_fp_user(message: Message, settings: Settings) -> bool:
