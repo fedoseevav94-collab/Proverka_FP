@@ -107,10 +107,8 @@ def _workflow_context(case: DamageCase) -> str:
 
 def service_amount_request_text(case: DamageCase, service_username: str) -> str:
     return (
-        f"@{service_username.lstrip('@')} нужна оценка/сумма по повреждению.\n\n"
-        f"Авто: {_car_label(case)}\n"
-        "Описание и фото в сообщении, на которое я отвечаю.\n\n"
-        "Ответьте reply к этому сообщению или к исходному ФП-сообщению."
+        f"@{service_username.lstrip('@')} нужна оценка/сумма по повреждению.\n"
+        "Ответьте reply к этому сообщению."
     )
 
 
