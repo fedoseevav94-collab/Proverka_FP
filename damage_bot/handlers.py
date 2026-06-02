@@ -17,7 +17,7 @@ from damage_bot.core.classifier import classify_close_comment
 from damage_bot.core.constants import ActionType, CaseStatus, FINAL_STATUSES, MessageCategory
 from damage_bot.core.fp_schedule import fp_first_due_at
 from damage_bot.core.managers import active_manager_mentions, infer_manager_username, parse_manager_days_off
-from damage_bot.core.matching import MatchStatus, match_car
+from damage_bot.core.matching import MatchStatus, match_car, match_car_exact
 from damage_bot.core.parsers import is_fp_inspection, parse_fp_message, parse_pv_issue, parse_pv_return
 from damage_bot.core.plates import equivalent_chat_ids, find_plate
 from damage_bot.db import CaseAction, DamageCase, FPMessage, PVReturn
@@ -604,8 +604,13 @@ async def _handle_fp_message(
         if await find_fp_message(session, message.chat.id, message.message_id):
             return
         cars = await car_refs(session)
-        car_match = match_car(parsed.plate_raw, cars)
+        car_match = match_car_exact(parsed.plate_raw, cars)
         car_id = car_match.car.id if car_match.status == MatchStatus.MATCHED and car_match.car else None
+        car_matched = car_match.status == MatchStatus.MATCHED and car_match.car is not None
+        if car_match.status == MatchStatus.UNKNOWN and parsed.plate_raw:
+            car = await upsert_car_from_plate(session, parsed.plate_raw, discovered_status="DISCOVERED_FROM_FP")
+            car_id = car.id if car else None
+            car_matched = car is not None
         fp = FPMessage(
             telegram_message_id=message.message_id,
             chat_id=message.chat.id,
@@ -625,7 +630,7 @@ async def _handle_fp_message(
         session.add(fp)
         await session.flush()
         if parsed.category in {MessageCategory.DAMAGE_CHARGE_REQUIRED, MessageCategory.DAMAGE_NO_CHARGE_REQUIRED}:
-            if car_match.status != MatchStatus.MATCHED:
+            if not car_matched:
                 await _send_diagnostic(bot, settings, text, parsed.plate_raw, car_match)
             else:
                 first_due_at = None

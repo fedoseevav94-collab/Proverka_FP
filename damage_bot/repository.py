@@ -31,6 +31,7 @@ async def upsert_car_from_plate(
     session: AsyncSession,
     plate: str | None,
     car_model: str | None = None,
+    discovered_status: str = "DISCOVERED_FROM_PV",
 ) -> Car | None:
     normalized = normalize_plate(plate)
     if not normalized:
@@ -49,7 +50,7 @@ async def upsert_car_from_plate(
         original_plate=plate or normalized,
         normalized_plate=normalized,
         digits_key=digits_key(normalized),
-        status="DISCOVERED_FROM_PV",
+        status=discovered_status,
     )
     session.add(car)
     await session.flush()

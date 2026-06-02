@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from damage_bot.core.classifier import classify_close_comment, classify_fp_text
 from damage_bot.core.constants import CaseStatus, MessageCategory
-from damage_bot.core.matching import CarRef, MatchStatus, match_car
+from damage_bot.core.matching import CarRef, MatchStatus, match_car, match_car_exact
 from damage_bot.core.parsers import is_fp_inspection, parse_fp_message, parse_pv_issue, parse_pv_return
 from damage_bot.core.plates import digits_key, equivalent_chat_ids, normalize_plate
 from damage_bot.core.workflow import ReminderSchedule, escalation_due_at, reminder_due_at
@@ -133,6 +133,14 @@ def test_car_matching_exact_digits_unknown_and_ambiguous() -> None:
     assert match_car("о917нх797", cars).car.id == 1
     assert match_car("A771AA761", cars).status == MatchStatus.AMBIGUOUS
     assert match_car("A000AA000", cars).status == MatchStatus.UNKNOWN
+
+
+def test_exact_car_matching_does_not_use_digits_fallback() -> None:
+    cars = [
+        CarRef(1, "Kia", "K5", "С771СН761", "C771CH761", "771761"),
+    ]
+    assert match_car("A771AA761", cars).status == MatchStatus.MATCHED
+    assert match_car_exact("A771AA761", cars).status == MatchStatus.UNKNOWN
 
 
 def test_reminder_schedule() -> None:
