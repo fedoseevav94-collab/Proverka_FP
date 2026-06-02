@@ -67,8 +67,8 @@ def register_handlers(dp: Dispatcher, session_factory: async_sessionmaker, setti
     async def open_cases_wrapper(message: Message) -> None:
         await handle_open_cases(message, session_factory, settings)
 
-    async def close_case_wrapper(message: Message) -> None:
-        await handle_close_case(message, session_factory, settings)
+    async def close_case_wrapper(message: Message, bot: Bot) -> None:
+        await handle_close_case(message, bot, session_factory, settings)
 
     async def cancel_case_wrapper(message: Message) -> None:
         await handle_cancel_case(message, session_factory, settings)
@@ -196,7 +196,12 @@ async def handle_open_cases(message: Message, session_factory: async_sessionmake
     await message.answer("\n".join(lines) if lines else "Открытых кейсов нет.")
 
 
-async def handle_close_case(message: Message, session_factory: async_sessionmaker, settings: Settings) -> None:
+async def handle_close_case(
+    message: Message,
+    bot: Bot,
+    session_factory: async_sessionmaker,
+    settings: Settings,
+) -> None:
     if not _has_bot_access(message, settings):
         await _answer_no_access(message)
         return
@@ -220,8 +225,13 @@ async def handle_close_case(message: Message, session_factory: async_sessionmake
         _close_case(case, close_status, message.from_user.id if message.from_user else None, parts[2])
         await create_case_action(session, case.id, ActionType.CLOSED_WITH_COMMENT, comment=parts[2])
         await session.commit()
-    await message.answer(
-        close_summary_text(case, close_status, _actor_label(message.from_user), parts[2], settings.office_timezone)
+    await _send_close_summary(
+        bot,
+        case,
+        close_status,
+        _actor_label(message.from_user),
+        parts[2],
+        settings,
     )
 
 
@@ -259,10 +269,10 @@ async def handle_message(
         logger.info("Ignored FP message from service user %s", message.from_user.username if message.from_user else None)
         return
     if message.from_user:
-        await _try_close_waiting_comment(message, session_factory, text)
+        await _try_close_waiting_comment(message, bot, session_factory, settings, text)
 
     if equivalent_chat_ids(settings.fp_chat_id, message.chat.id):
-        if await _try_close_case_from_manager_text(message, session_factory, settings, text):
+        if await _try_close_case_from_manager_text(message, bot, session_factory, settings, text):
             return
         if await _try_record_manager_reply_to_fp(message, session_factory, settings):
             return
@@ -359,6 +369,7 @@ def _pending_service_amount_cases_query():
 
 async def _try_close_case_from_manager_text(
     message: Message,
+    bot: Bot,
     session_factory: async_sessionmaker,
     settings: Settings,
     text: str,
@@ -400,8 +411,13 @@ async def _try_close_case_from_manager_text(
             text,
         )
         await session.commit()
-    await message.reply(
-        close_summary_text(case, close_status, _actor_label(message.from_user), text, settings.office_timezone)
+    await _send_close_summary(
+        bot,
+        case,
+        close_status,
+        _actor_label(message.from_user),
+        text,
+        settings,
     )
     return True
 
@@ -534,14 +550,13 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, session_factory: as
             )
             await session.commit()
             await callback.answer("Закрыто.")
-            await callback.message.answer(
-                close_summary_text(
-                    case,
-                    CaseStatus.CLOSED_NO_CHARGE_REQUIRED,
-                    _actor_label(callback.from_user),
-                    None,
-                    settings.office_timezone,
-                )
+            await _send_close_summary(
+                bot,
+                case,
+                CaseStatus.CLOSED_NO_CHARGE_REQUIRED,
+                _actor_label(callback.from_user),
+                None,
+                settings,
             )
 
 
@@ -714,7 +729,13 @@ async def _case_has_manager_seen(session, case_id: int) -> bool:
     )
 
 
-async def _try_close_waiting_comment(message: Message, session_factory: async_sessionmaker, text: str) -> None:
+async def _try_close_waiting_comment(
+    message: Message,
+    bot: Bot,
+    session_factory: async_sessionmaker,
+    settings: Settings,
+    text: str,
+) -> None:
     user = message.from_user
     if not user:
         return
@@ -729,7 +750,7 @@ async def _try_close_waiting_comment(message: Message, session_factory: async_se
         _close_case(case, status, user.id, text)
         await create_case_action(session, case.id, ActionType.CLOSED_WITH_COMMENT, user.id, user.username, user.full_name, text)
         await session.commit()
-    await message.reply(close_summary_text(case, status, _actor_label(user), text))
+    await _send_close_summary(bot, case, status, _actor_label(user), text, settings)
 
 
 def _close_case(case: DamageCase, status: CaseStatus, user_id: int | None, comment: str) -> None:
@@ -738,6 +759,26 @@ def _close_case(case: DamageCase, status: CaseStatus, user_id: int | None, comme
     case.close_comment = comment
     case.close_type = status.value
     case.closed_at = utcnow()
+
+
+async def _send_close_summary(
+    bot: Bot,
+    case: DamageCase,
+    status: CaseStatus,
+    actor: str | None,
+    comment: str | None,
+    settings: Settings,
+) -> None:
+    text = close_summary_text(case, status, actor, comment, settings.office_timezone)
+    if case.fp_message:
+        await bot.send_message(
+            case.fp_message.chat_id,
+            text,
+            reply_to_message_id=case.fp_message.telegram_message_id,
+            allow_sending_without_reply=False,
+        )
+        return
+    await bot.send_message(settings.fp_chat_id, text)
 
 
 def _actor_label(user) -> str | None:
