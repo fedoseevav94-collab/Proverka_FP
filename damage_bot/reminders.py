@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.orm import selectinload
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from damage_bot.config import Settings
-from damage_bot.core.constants import ActionType, CaseStatus
+from damage_bot.core.constants import ActionType, CaseStatus, FINAL_STATUSES
 from damage_bot.core.managers import parse_manager_days_off
-from damage_bot.db import DamageCase
+from damage_bot.db import CaseAction, DamageCase
 from damage_bot.keyboards import reminder_keyboard
 from damage_bot.messages import escalation_text, reminder_text, service_amount_request_text
 from damage_bot.repository import create_case_action, due_reminder_cases, utcnow
@@ -52,6 +52,7 @@ async def process_due_cases(bot: Bot, session_factory: async_sessionmaker, setti
                 await _escalate(bot, settings, session, case)
                 continue
             await _send_reminder(bot, session, case, settings)
+        await _send_due_service_amount_reminders(bot, session, settings, now)
         await session.commit()
 
 
@@ -67,6 +68,48 @@ async def _send_service_amount_reminder(bot: Bot, session, case: DamageCase, set
         minutes=settings.service_amount_reminder_interval_minutes
     )
     await create_case_action(session, case.id, ActionType.SERVICE_AMOUNT_REQUESTED)
+
+
+async def _send_due_service_amount_reminders(bot: Bot, session, settings: Settings, now) -> None:
+    requested = (
+        select(CaseAction.id)
+        .where(
+            CaseAction.case_id == DamageCase.id,
+            CaseAction.action_type == ActionType.SERVICE_AMOUNT_REQUESTED.value,
+        )
+        .exists()
+    )
+    received = (
+        select(CaseAction.id)
+        .where(
+            CaseAction.case_id == DamageCase.id,
+            CaseAction.action_type == ActionType.SERVICE_AMOUNT_RECEIVED.value,
+        )
+        .exists()
+    )
+    cases = await session.scalars(
+        select(DamageCase)
+        .where(
+            DamageCase.status.not_in([status.value for status in FINAL_STATUSES]),
+            requested,
+            ~received,
+        )
+        .options(selectinload(DamageCase.car), selectinload(DamageCase.fp_message))
+    )
+    for case in cases:
+        latest_request_at = await session.scalar(
+            select(func.max(CaseAction.created_at)).where(
+                CaseAction.case_id == case.id,
+                CaseAction.action_type == ActionType.SERVICE_AMOUNT_REQUESTED.value,
+            )
+        )
+        if latest_request_at and latest_request_at.tzinfo is None:
+            latest_request_at = latest_request_at.replace(tzinfo=timezone.utc)
+        if latest_request_at and latest_request_at + timedelta(
+            minutes=settings.service_amount_reminder_interval_minutes
+        ) > now:
+            continue
+        await _send_service_amount_reminder(bot, session, case, settings)
 
 
 async def _send_reminder(bot: Bot, session, case: DamageCase, settings: Settings) -> None:

@@ -192,12 +192,14 @@ async def due_reminder_cases(session: AsyncSession, now: datetime) -> list[Damag
 
 async def waiting_comment_case_for_user(session: AsyncSession, user_id: int) -> DamageCase | None:
     return await session.scalar(
-        select(DamageCase).where(
+        select(DamageCase)
+        .where(
             and_(
                 DamageCase.status == CaseStatus.WAITING_CLOSE_COMMENT.value,
                 DamageCase.closed_by_user_id == user_id,
             )
         )
+        .options(selectinload(DamageCase.fp_message), selectinload(DamageCase.car))
     )
 
 
@@ -215,4 +217,3 @@ async def open_cases(session: AsyncSession) -> list[DamageCase]:
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
-

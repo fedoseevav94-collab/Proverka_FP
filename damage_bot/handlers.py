@@ -23,7 +23,13 @@ from damage_bot.core.plates import equivalent_chat_ids, find_plate
 from damage_bot.db import CaseAction, DamageCase, FPMessage, PVReturn
 from damage_bot.fleet import reload_cars_from_excel
 from damage_bot.keyboards import reminder_keyboard
-from damage_bot.messages import close_comment_prompt, diagnostic_text, pv_action_request_text, service_amount_request_text
+from damage_bot.messages import (
+    close_comment_prompt,
+    close_summary_text,
+    diagnostic_text,
+    pv_action_request_text,
+    service_amount_request_text,
+)
 from damage_bot.repository import (
     attach_return_to_cases,
     car_refs,
@@ -203,14 +209,20 @@ async def handle_close_case(message: Message, session_factory: async_sessionmake
         await message.answer("Комментарий не похож на закрывающий.")
         return
     async with session_factory() as session:
-        case = await session.get(DamageCase, int(parts[1]))
+        case = await session.scalar(
+            select(DamageCase)
+            .where(DamageCase.id == int(parts[1]))
+            .options(selectinload(DamageCase.fp_message), selectinload(DamageCase.car))
+        )
         if not case:
             await message.answer("Кейс не найден.")
             return
         _close_case(case, close_status, message.from_user.id if message.from_user else None, parts[2])
         await create_case_action(session, case.id, ActionType.CLOSED_WITH_COMMENT, comment=parts[2])
         await session.commit()
-    await message.answer(f"Кейс #{parts[1]} закрыт: {close_status.value}")
+    await message.answer(
+        close_summary_text(case, close_status, _actor_label(message.from_user), parts[2], settings.office_timezone)
+    )
 
 
 async def handle_cancel_case(message: Message, session_factory: async_sessionmaker, settings: Settings) -> None:
@@ -271,11 +283,7 @@ async def _try_record_service_amount_response(
     if username != settings.service_username.lstrip("@").lower():
         return False
     async with session_factory() as session:
-        query = (
-            select(DamageCase)
-            .where(DamageCase.status == CaseStatus.WAITING_SERVICE_AMOUNT.value)
-            .options(selectinload(DamageCase.fp_message), selectinload(DamageCase.car))
-        )
+        query = _pending_service_amount_cases_query()
         lookup_text = text
         if message.reply_to_message:
             direct_query = query.join(FPMessage, FPMessage.id == DamageCase.fp_message_id).where(
@@ -307,8 +315,9 @@ async def _try_record_service_amount_response(
 
 
 async def _mark_service_amount_received(session, case: DamageCase, message: Message, text: str) -> None:
-    case.status = CaseStatus.WAITING_MANAGER_ACTION.value
-    case.first_check_due_at = utcnow()
+    if case.status == CaseStatus.WAITING_SERVICE_AMOUNT.value:
+        case.status = CaseStatus.WAITING_MANAGER_ACTION.value
+        case.first_check_due_at = utcnow()
     await create_case_action(
         session,
         case.id,
@@ -317,6 +326,34 @@ async def _mark_service_amount_received(session, case: DamageCase, message: Mess
         message.from_user.username if message.from_user else None,
         message.from_user.full_name if message.from_user else None,
         text,
+    )
+
+
+def _pending_service_amount_cases_query():
+    requested = (
+        select(CaseAction.id)
+        .where(
+            CaseAction.case_id == DamageCase.id,
+            CaseAction.action_type == ActionType.SERVICE_AMOUNT_REQUESTED.value,
+        )
+        .exists()
+    )
+    received = (
+        select(CaseAction.id)
+        .where(
+            CaseAction.case_id == DamageCase.id,
+            CaseAction.action_type == ActionType.SERVICE_AMOUNT_RECEIVED.value,
+        )
+        .exists()
+    )
+    return (
+        select(DamageCase)
+        .where(
+            DamageCase.status.not_in([status.value for status in FINAL_STATUSES]),
+            requested,
+            ~received,
+        )
+        .options(selectinload(DamageCase.fp_message), selectinload(DamageCase.car))
     )
 
 
@@ -347,6 +384,7 @@ async def _try_close_case_from_manager_text(
                 DamageCase.car_id == car_match.car.id,
                 DamageCase.status.not_in([status.value for status in FINAL_STATUSES]),
             )
+            .options(selectinload(DamageCase.fp_message), selectinload(DamageCase.car))
             .order_by(DamageCase.created_at.desc())
         )
         if not case:
@@ -362,7 +400,9 @@ async def _try_close_case_from_manager_text(
             text,
         )
         await session.commit()
-    await message.reply(f"Кейс #{case.id} закрыт: {close_status.value}")
+    await message.reply(
+        close_summary_text(case, close_status, _actor_label(message.from_user), text, settings.office_timezone)
+    )
     return True
 
 
@@ -476,25 +516,9 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, session_factory: as
             )
             await callback.answer("Жду комментарий.")
         elif action == "wait_service_amount":
-            case.status = CaseStatus.WAITING_SERVICE_AMOUNT.value
-            case.first_check_due_at = utcnow() + timedelta(
-                minutes=settings.service_amount_reminder_interval_minutes
-            )
-            await create_case_action(
-                session,
-                case.id,
-                ActionType.SERVICE_AMOUNT_REQUESTED,
-                callback.from_user.id,
-                callback.from_user.username,
-                callback.from_user.full_name,
-            )
+            requested = await _request_service_amount_if_needed(bot, session, case, settings, callback.from_user)
             await session.commit()
-            await callback.message.answer(
-                service_amount_request_text(case, settings.service_username),
-                reply_to_message_id=case.fp_message.telegram_message_id,
-                allow_sending_without_reply=False,
-            )
-            await callback.answer("Запросил сумму у сервиса.")
+            await callback.answer("Запросил сумму у сервиса." if requested else "Сервис уже запрошен.")
         elif action == "close_no_charge":
             case.status = CaseStatus.CLOSED_NO_CHARGE_REQUIRED.value
             case.closed_by_user_id = callback.from_user.id
@@ -510,7 +534,47 @@ async def handle_callback(callback: CallbackQuery, bot: Bot, session_factory: as
             )
             await session.commit()
             await callback.answer("Закрыто.")
-            await callback.message.answer(f"Кейс #{case.id} закрыт: списание не требуется.")
+            await callback.message.answer(
+                close_summary_text(
+                    case,
+                    CaseStatus.CLOSED_NO_CHARGE_REQUIRED,
+                    _actor_label(callback.from_user),
+                    None,
+                    settings.office_timezone,
+                )
+            )
+
+
+async def _request_service_amount_if_needed(
+    bot: Bot,
+    session,
+    case: DamageCase,
+    settings: Settings,
+    actor=None,
+) -> bool:
+    already_requested = await session.scalar(
+        select(CaseAction.id).where(
+            CaseAction.case_id == case.id,
+            CaseAction.action_type == ActionType.SERVICE_AMOUNT_REQUESTED.value,
+        )
+    )
+    if already_requested:
+        return False
+    await bot.send_message(
+        case.fp_message.chat_id,
+        service_amount_request_text(case, settings.service_username),
+        reply_to_message_id=case.fp_message.telegram_message_id,
+        allow_sending_without_reply=False,
+    )
+    await create_case_action(
+        session,
+        case.id,
+        ActionType.SERVICE_AMOUNT_REQUESTED,
+        actor.id if actor else None,
+        actor.username if actor else None,
+        actor.full_name if actor else None,
+    )
+    return True
 
 
 async def _handle_fp_message(
@@ -561,6 +625,8 @@ async def _handle_fp_message(
                 if case:
                     case.car = await get_car(session, case.car_id)
                     case.fp_message = fp
+                if case and case.category == MessageCategory.DAMAGE_CHARGE_REQUIRED.value:
+                    await _request_service_amount_if_needed(bot, session, case, settings)
                 if case and is_fp_inspection(text):
                     mention = active_manager_mentions(
                         settings.manager_days_off,
@@ -624,6 +690,8 @@ async def _handle_pv_message(
             cases = await open_cases_for_return(session, car_id, pv.created_at)
             await attach_return_to_cases(session, pv, cases, settings.reminder_first_delay_minutes)
             for case in cases:
+                if case.category == MessageCategory.DAMAGE_CHARGE_REQUIRED.value:
+                    await _request_service_amount_if_needed(bot, session, case, settings)
                 await bot.send_message(
                     case.fp_message.chat_id,
                     pv_action_request_text(case, f"@{case.manager_username}" if case.manager_username else None),
@@ -661,7 +729,7 @@ async def _try_close_waiting_comment(message: Message, session_factory: async_se
         _close_case(case, status, user.id, text)
         await create_case_action(session, case.id, ActionType.CLOSED_WITH_COMMENT, user.id, user.username, user.full_name, text)
         await session.commit()
-    await message.reply(f"Кейс #{case.id} закрыт: {status.value}")
+    await message.reply(close_summary_text(case, status, _actor_label(user), text))
 
 
 def _close_case(case: DamageCase, status: CaseStatus, user_id: int | None, comment: str) -> None:
@@ -670,6 +738,16 @@ def _close_case(case: DamageCase, status: CaseStatus, user_id: int | None, comme
     case.close_comment = comment
     case.close_type = status.value
     case.closed_at = utcnow()
+
+
+def _actor_label(user) -> str | None:
+    if not user:
+        return None
+    username = f"@{user.username}" if getattr(user, "username", None) else None
+    full_name = getattr(user, "full_name", None)
+    if username and full_name:
+        return f"{full_name} ({username})"
+    return username or full_name
 
 
 async def _send_diagnostic(bot: Bot, settings: Settings, text: str, plate: str | None, car_match) -> None:

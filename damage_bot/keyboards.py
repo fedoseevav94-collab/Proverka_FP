@@ -9,5 +9,5 @@ def reminder_keyboard(case_id: int, category: str) -> InlineKeyboardMarkup:
         for button in reminder_button_specs(case_id, category)
     ]
     return InlineKeyboardMarkup(
-        inline_keyboard=[buttons]
+        inline_keyboard=[[button] for button in buttons]
     )

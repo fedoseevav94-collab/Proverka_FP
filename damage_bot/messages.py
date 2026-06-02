@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 from damage_bot.core.constants import CaseStatus, MessageCategory
 from damage_bot.core.plates import make_message_link
 from damage_bot.db import DamageCase
@@ -107,19 +109,61 @@ def service_amount_request_text(case: DamageCase, service_username: str) -> str:
     return (
         f"@{service_username.lstrip('@')} нужна оценка/сумма по повреждению.\n\n"
         f"Авто: {_car_label(case)}\n"
-        f"Повреждение:\n{case.damage_description}\n\n"
+        "Описание и фото в сообщении, на которое я отвечаю.\n\n"
         "Ответьте reply к этому сообщению или к исходному ФП-сообщению."
     )
 
 
 def pv_action_request_text(case: DamageCase, mention_override: str | None = None) -> str:
     mention = f"{mention_override}\n\n" if mention_override else ""
+    details = []
+    if case.driver_name:
+        details.append(f"Водитель: {case.driver_name}")
+    if case.manager_name:
+        details.append(f"Менеджер: {case.manager_name}")
+    detail_text = "\n".join(details)
+    if detail_text:
+        detail_text += "\n\n"
     return (
         mention
-        + f"По авто {_car_label(case)} есть повреждение в ФП.\n"
+        + f"Найдены повреждения по авто {_car_label(case)}.\n"
         + f"{_workflow_context(case)}\n\n"
-        + f"Водитель: {case.driver_name or '-'}\n"
-        f"Менеджер: {case.manager_name or '-'}\n\n"
-        f"Повреждение:\n{case.damage_description}\n\n"
-        "Выберите действие. Если нужна оценка сервиса, нажмите кнопку с @Norblacksmith."
+        + detail_text
+        + "@Norblacksmith уже запрошен для оценки/суммы.\n"
+        "Выберите действие после проверки."
     )
+
+
+def close_summary_text(
+    case: DamageCase,
+    status: CaseStatus,
+    actor: str | None,
+    comment: str | None = None,
+    timezone_name: str = "Europe/Moscow",
+) -> str:
+    car = case.car
+    plate = car.original_plate if car else "-"
+    action = _close_action_label(status)
+    inspected_at = "-"
+    if case.fp_message and case.fp_message.created_at:
+        inspected_at = case.fp_message.created_at.astimezone(ZoneInfo(timezone_name)).strftime("%d.%m.%Y %H:%M")
+    lines = [
+        f"Сотрудник {actor or '-'} {action} по повреждениям на авто {plate}.",
+        f"Дата и время осмотра: {inspected_at}",
+    ]
+    if comment:
+        lines.append(f"Комментарий: {comment}")
+    return "\n".join(lines)
+
+
+def _close_action_label(status: CaseStatus) -> str:
+    labels = {
+        CaseStatus.CLOSED_PAID_CASH: "зафиксировал оплату",
+        CaseStatus.CLOSED_BALANCE_CHARGED: "зафиксировал списание с баланса/депозита",
+        CaseStatus.CLOSED_INSTALLMENT: "поставил рассрочку",
+        CaseStatus.CLOSED_PERIODIC_CHARGES: "поставил периодические списания",
+        CaseStatus.CLOSED_TRANSFERRED_TO_OFFICE: "передал вопрос в офис",
+        CaseStatus.CLOSED_NO_CHARGE_REQUIRED: "подтвердил, что списание не требуется",
+        CaseStatus.CLOSED_NO_CHARGE_WITH_REASON: "закрыл без списания",
+    }
+    return labels.get(status, f"закрыл кейс ({status.value})")
